@@ -1,0 +1,4 @@
+interface:
+  display_name: "UML VP"
+  short_description: "Diagrammes VP lisibles, tracés simples et orthogonaux"
+  default_prompt: "Utilise $uml-vp pour créer ou améliorer mes diagrammes Visual Paradigm, sans blocs décoratifs, avec des attaches pertinentes et le moins de croisements et de coudes possible."

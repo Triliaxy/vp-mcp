@@ -126,3 +126,7 @@ Docker uses multi-stage build with VP API stub JAR for compilation.
 - [x] New class/project tools exercised end-to-end in VP 18.1: two e-commerce class diagrams built,
   saved with saveProjectAs into three files, converted to data models, and checked against the
   saved .vpp files (SQLite) with zero differences
+
+## UML VP skill — 12 October 2026
+
+Added `skills/uml-vp` with the user's native VP layout conventions, offline routing proposals, caption placement without model renaming, geometry/identity audits, stale-plan checks and inspection crop planning. Python helpers use only the standard library; edits are applied through the available MCP tools after validation. These tools do not modify the live project by themselves. Fourteen offline regression tests pass; the routing helper was also exercised on a historical project snapshot (297 to 128 predicted bends). Model-detail properties absent from snapshots still require a separate semantic comparison, and visual review remains necessary. No Java/plugin implementation changes are included in this skill addition.
