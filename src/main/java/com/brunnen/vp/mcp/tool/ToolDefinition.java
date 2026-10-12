@@ -88,8 +88,19 @@ public class ToolDefinition {
       }
     }
 
-    Object result = method.invoke(target, args);
-    return result != null ? result.toString() : "OK";
+    try {
+      Object result = method.invoke(target, args);
+      return result != null ? result.toString() : "OK";
+    } catch (java.lang.reflect.InvocationTargetException e) {
+      Throwable cause = e.getCause();
+      if (cause instanceof Exception) {
+        throw (Exception) cause;
+      }
+      if (cause instanceof Error) {
+        throw (Error) cause;
+      }
+      throw e;
+    }
   }
 
   private static Object getDefaultValue(Class<?> type) {

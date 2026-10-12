@@ -1,6 +1,7 @@
 package com.brunnen.vp.mcp.tools;
 
 import com.brunnen.vp.mcp.tool.Tool;
+import com.brunnen.vp.mcp.util.DiagramElementDeletion;
 import com.brunnen.vp.mcp.util.DiagramLayoutEngine;
 import com.brunnen.vp.mcp.util.DiagramUtils;
 import com.vp.plugin.ApplicationManager;
@@ -542,25 +543,37 @@ public abstract class AbstractDiagramMcpTools {
   @Tool(
       name = "removeDiagramElement",
       description =
-          "Remove an element (shape or connector) from a diagram by its model element name")
-  public String removeDiagramElement(String diagramName, String elementName) {
-    try {
-      return runOnEdt(
-          () -> {
-            IDiagramUIModel diagram = DiagramUtils.findDiagramByName(diagramName);
-            if (diagram == null) {
-              return "Diagram not found: " + diagramName;
-            }
-            IDiagramElement element = findDiagramElementByName(diagram, elementName);
-            if (element == null) {
-              return "Element not found on diagram: " + elementName;
-            }
-            diagram.removeDiagramElement(element);
-            return "Removed element '" + elementName + "' from diagram '" + diagramName + "'";
-          });
-    } catch (Exception e) {
-      return "Error removing element: " + e.getMessage();
-    }
+          "Remove one shape or connector VIEW from a diagram by its unique model name or caption. "
+              + "Preserves the underlying model and its views on other diagrams. "
+              + "Use deleteModelElement to delete the model from the project as well.")
+  public String removeDiagramElement(String diagramName, String elementName) throws Exception {
+    return runOnEdt(
+        () -> {
+          IDiagramUIModel diagram = DiagramUtils.findDiagramByName(diagramName);
+          if (diagram == null) {
+            throw new IllegalArgumentException("Diagram not found: " + diagramName);
+          }
+          DiagramElementDeletion.removeView(diagram, elementName);
+          return "Removed element '" + elementName + "' from diagram '" + diagramName + "'";
+        });
+  }
+
+  @Tool(
+      name = "deleteModelElement",
+      description =
+          "Delete the underlying MODEL of a uniquely named element on a diagram. "
+              + "Removes the model from the project, ALL its diagram views and dependent relationships. "
+              + "Use removeDiagramElement when only one diagram view should be removed.")
+  public String deleteModelElement(String diagramName, String elementName) throws Exception {
+    return runOnEdt(
+        () -> {
+          IDiagramUIModel diagram = DiagramUtils.findDiagramByName(diagramName);
+          if (diagram == null) {
+            throw new IllegalArgumentException("Diagram not found: " + diagramName);
+          }
+          DiagramElementDeletion.deleteModel(requireProject(), diagram, elementName);
+          return "Deleted model '" + elementName + "' and all its diagram views";
+        });
   }
 
   @Tool(

@@ -18,7 +18,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
 
 /**
  * Lightweight MCP server using Undertow HTTP server. Implements SSE transport and MCP JSON-RPC
@@ -63,7 +62,7 @@ public class McpServer {
   public void start() {
     server =
         Undertow.builder()
-            .addHttpListener(port, "0.0.0.0")
+            .addHttpListener(port, "127.0.0.1")
             .setHandler(this::handleRequest)
             .setIoThreads(4)
             .setWorkerThreads(16)
@@ -91,7 +90,7 @@ public class McpServer {
     String path = exchange.getRequestPath();
     if ("/sse".equals(path)) {
       handleSse(exchange);
-    } else if ("/mcp/messages".equals(path)) {
+    } else if ("/mcp/messages".equals(path) || "/mcp".equals(path)) {
       handleMessage(exchange);
     } else if ("/api/tools".equals(path)) {
       handleApiTools(exchange);
@@ -119,44 +118,40 @@ public class McpServer {
     exchange.getResponseHeaders().put(new HttpString("Cache-Control"), "no-cache");
     exchange.setStatusCode(200);
 
-    // Dispatch to worker thread for blocking I/O
-    exchange.dispatch();
-    exchange.startBlocking();
+    // Undertow owns the worker lifecycle; avoid leaking one executor per request.
+    exchange.dispatch(
+        () -> {
+          exchange.startBlocking();
+          OutputStream out = exchange.getOutputStream();
+          sseStreams.put(sessionId, out);
+          try {
+            // Send endpoint event
+            String endpointUrl = "/mcp/messages?sessionId=" + sessionId;
+            String sseMsg = "event: endpoint\ndata: " + endpointUrl + "\n\n";
+            synchronized (out) {
+              out.write(sseMsg.getBytes(StandardCharsets.UTF_8));
+              out.flush();
+            }
 
-    // Run SSE loop on a separate thread
-    Executors.newSingleThreadExecutor()
-        .submit(
-            () -> {
-              OutputStream out = exchange.getOutputStream();
-              sseStreams.put(sessionId, out);
+            // Keep connection alive
+            while (!Thread.currentThread().isInterrupted() && exchange.getConnection().isOpen()) {
+              Thread.sleep(15000);
               try {
-                // Send endpoint event
-                String endpointUrl = "/mcp/messages?sessionId=" + sessionId;
-                String sseMsg = "event: endpoint\ndata: " + endpointUrl + "\n\n";
                 synchronized (out) {
-                  out.write(sseMsg.getBytes(StandardCharsets.UTF_8));
+                  out.write(":\n\n".getBytes(StandardCharsets.UTF_8));
                   out.flush();
                 }
-
-                // Keep connection alive
-                while (!Thread.currentThread().isInterrupted()
-                    && exchange.getConnection().isOpen()) {
-                  Thread.sleep(15000);
-                  try {
-                    synchronized (out) {
-                      out.write(":\n\n".getBytes(StandardCharsets.UTF_8));
-                      out.flush();
-                    }
-                  } catch (Exception e) {
-                    break;
-                  }
-                }
               } catch (Exception e) {
-                // Client disconnected
-              } finally {
-                sseStreams.remove(sessionId);
+                break;
               }
-            });
+            }
+          } catch (Exception e) {
+            // Client disconnected
+          } finally {
+            sseStreams.remove(sessionId);
+            exchange.endExchange();
+          }
+        });
   }
 
   // --- Message Handler ---
@@ -192,56 +187,53 @@ public class McpServer {
     }
     final String sessionId = sid;
 
-    // Read request body
-    exchange.dispatch();
-    exchange.startBlocking();
+    // Read the request body on an Undertow worker, outside the I/O thread.
+    exchange.dispatch(
+        () -> {
+          exchange.startBlocking();
+          try {
+            String body =
+                new String(exchange.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
 
-    Executors.newSingleThreadExecutor()
-        .submit(
-            () -> {
-              try {
-                String body =
-                    new String(exchange.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            JsonNode request = MAPPER.readTree(body);
+            JsonNode response = processRequest(request, sessionId);
 
-                JsonNode request = MAPPER.readTree(body);
-                JsonNode response = processRequest(request, sessionId);
-
-                // Notifications (no id) don't get a response
-                if (request.has("id") && !request.get("id").isNull()) {
-                  // Push the response over the SSE stream if one is open for this session (MCP SSE
-                  // transport); otherwise return it as the HTTP response body.
-                  OutputStream sseOut = sessionId != null ? sseStreams.get(sessionId) : null;
-                  if (sseOut != null) {
-                    String json = MAPPER.writeValueAsString(response);
-                    String sseMsg = "event: message\ndata: " + json + "\n\n";
-                    synchronized (sseOut) {
-                      sseOut.write(sseMsg.getBytes(StandardCharsets.UTF_8));
-                      sseOut.flush();
-                    }
-                    exchange.setStatusCode(202);
-                    exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
-                    exchange.getOutputStream().write("{}".getBytes(StandardCharsets.UTF_8));
-                  } else {
-                    byte[] respBytes = MAPPER.writeValueAsBytes(response);
-                    exchange.setStatusCode(200);
-                    exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
-                    exchange.getOutputStream().write(respBytes);
-                  }
-                } else {
-                  exchange.setStatusCode(200);
+            // Notifications (no id) don't get a response
+            if (request.has("id") && !request.get("id").isNull()) {
+              // Push the response over the SSE stream if one is open for this session (MCP SSE
+              // transport); otherwise return it as the HTTP response body.
+              OutputStream sseOut = sessionId != null ? sseStreams.get(sessionId) : null;
+              if (sseOut != null) {
+                String json = MAPPER.writeValueAsString(response);
+                String sseMsg = "event: message\ndata: " + json + "\n\n";
+                synchronized (sseOut) {
+                  sseOut.write(sseMsg.getBytes(StandardCharsets.UTF_8));
+                  sseOut.flush();
                 }
-                exchange.getOutputStream().close();
-              } catch (Exception e) {
-                try {
-                  exchange.setStatusCode(500);
-                  exchange
-                      .getOutputStream()
-                      .write(("Error: " + e.getMessage()).getBytes(StandardCharsets.UTF_8));
-                  exchange.getOutputStream().close();
-                } catch (Exception ignored) {
-                }
+                exchange.setStatusCode(202);
+                exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
+                exchange.getOutputStream().write("{}".getBytes(StandardCharsets.UTF_8));
+              } else {
+                byte[] respBytes = MAPPER.writeValueAsBytes(response);
+                exchange.setStatusCode(200);
+                exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
+                exchange.getOutputStream().write(respBytes);
               }
-            });
+            } else {
+              exchange.setStatusCode(202);
+            }
+            exchange.getOutputStream().close();
+          } catch (Exception e) {
+            try {
+              exchange.setStatusCode(500);
+              exchange
+                  .getOutputStream()
+                  .write(("Error: " + e.getMessage()).getBytes(StandardCharsets.UTF_8));
+              exchange.getOutputStream().close();
+            } catch (Exception ignored) {
+            }
+          }
+        });
   }
 
   // --- MCP Protocol ---
@@ -357,32 +349,29 @@ public class McpServer {
       return;
     }
 
-    exchange.dispatch();
-    Executors.newSingleThreadExecutor()
-        .submit(
-            () -> {
-              try {
-                ArrayNode toolsArray = MAPPER.createArrayNode();
-                for (ToolDefinition tool : tools) {
-                  ObjectNode toolObj = MAPPER.createObjectNode();
-                  toolObj.put("name", tool.getName());
-                  toolObj.put("description", tool.getDescription());
-                  toolObj.set("inputSchema", tool.getInputSchema());
-                  toolsArray.add(toolObj);
-                }
-                byte[] resp = MAPPER.writeValueAsBytes(toolsArray);
-                exchange.setStatusCode(200);
-                exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
-                exchange
-                    .getResponseHeaders()
-                    .put(new HttpString("Access-Control-Allow-Origin"), "*");
-                exchange.getOutputStream().write(resp);
-                exchange.getOutputStream().close();
-              } catch (Exception e) {
-                exchange.setStatusCode(500);
-                exchange.endExchange();
-              }
-            });
+    exchange.dispatch(
+        () -> {
+          exchange.startBlocking();
+          try {
+            ArrayNode toolsArray = MAPPER.createArrayNode();
+            for (ToolDefinition tool : tools) {
+              ObjectNode toolObj = MAPPER.createObjectNode();
+              toolObj.put("name", tool.getName());
+              toolObj.put("description", tool.getDescription());
+              toolObj.set("inputSchema", tool.getInputSchema());
+              toolsArray.add(toolObj);
+            }
+            byte[] resp = MAPPER.writeValueAsBytes(toolsArray);
+            exchange.setStatusCode(200);
+            exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
+            exchange.getResponseHeaders().put(new HttpString("Access-Control-Allow-Origin"), "*");
+            exchange.getOutputStream().write(resp);
+            exchange.getOutputStream().close();
+          } catch (Exception e) {
+            exchange.setStatusCode(500);
+            exchange.endExchange();
+          }
+        });
   }
 
   private void handleApiExecute(HttpServerExchange exchange) {
@@ -406,59 +395,56 @@ public class McpServer {
     }
 
     exchange.getResponseHeaders().put(new HttpString("Access-Control-Allow-Origin"), "*");
-    exchange.dispatch();
-    exchange.startBlocking();
+    exchange.dispatch(
+        () -> {
+          exchange.startBlocking();
+          try {
+            String body =
+                new String(exchange.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            JsonNode request = MAPPER.readTree(body);
 
-    Executors.newSingleThreadExecutor()
-        .submit(
-            () -> {
-              try {
-                String body =
-                    new String(exchange.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-                JsonNode request = MAPPER.readTree(body);
+            String toolName = request.has("toolName") ? request.get("toolName").asText() : "";
+            JsonNode argsNode = request.get("arguments");
 
-                String toolName = request.has("toolName") ? request.get("toolName").asText() : "";
-                JsonNode argsNode = request.get("arguments");
-
-                ToolDefinition tool = null;
-                for (ToolDefinition t : tools) {
-                  if (t.getName().equals(toolName)) {
-                    tool = t;
-                    break;
-                  }
-                }
-
-                ObjectNode response = MAPPER.createObjectNode();
-                if (tool == null) {
-                  response.put("error", "Unknown tool: " + toolName);
-                  byte[] resp = MAPPER.writeValueAsBytes(response);
-                  exchange.setStatusCode(400);
-                  exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
-                  exchange.getOutputStream().write(resp);
-                } else {
-                  try {
-                    String result = invokeTool(tool, argsNode);
-                    response.put("result", result);
-                  } catch (Exception e) {
-                    response.put("error", e.getMessage());
-                  }
-                  byte[] resp = MAPPER.writeValueAsBytes(response);
-                  exchange.setStatusCode(200);
-                  exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
-                  exchange.getOutputStream().write(resp);
-                }
-                exchange.getOutputStream().close();
-              } catch (Exception e) {
-                try {
-                  exchange.setStatusCode(500);
-                  exchange
-                      .getOutputStream()
-                      .write(("Error: " + e.getMessage()).getBytes(StandardCharsets.UTF_8));
-                  exchange.getOutputStream().close();
-                } catch (Exception ignored) {
-                }
+            ToolDefinition tool = null;
+            for (ToolDefinition t : tools) {
+              if (t.getName().equals(toolName)) {
+                tool = t;
+                break;
               }
-            });
+            }
+
+            ObjectNode response = MAPPER.createObjectNode();
+            if (tool == null) {
+              response.put("error", "Unknown tool: " + toolName);
+              byte[] resp = MAPPER.writeValueAsBytes(response);
+              exchange.setStatusCode(400);
+              exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
+              exchange.getOutputStream().write(resp);
+            } else {
+              try {
+                String result = invokeTool(tool, argsNode);
+                response.put("result", result);
+              } catch (Exception e) {
+                response.put("error", e.getMessage());
+              }
+              byte[] resp = MAPPER.writeValueAsBytes(response);
+              exchange.setStatusCode(200);
+              exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
+              exchange.getOutputStream().write(resp);
+            }
+            exchange.getOutputStream().close();
+          } catch (Exception e) {
+            try {
+              exchange.setStatusCode(500);
+              exchange
+                  .getOutputStream()
+                  .write(("Error: " + e.getMessage()).getBytes(StandardCharsets.UTF_8));
+              exchange.getOutputStream().close();
+            } catch (Exception ignored) {
+            }
+          }
+        });
   }
 
   // --- JSON-RPC Helpers ---

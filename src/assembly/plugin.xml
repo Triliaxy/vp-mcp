@@ -5,6 +5,17 @@
         class="com.brunnen.vp.mcp.VPMcpPlugin">
 
     <runtime>
+        <library path="lib/visual-paradigm-mcp-plugin.jar" relativePath="true"/>
+        <library path="lib/jackson-annotations.jar" relativePath="true"/>
+        <library path="lib/jackson-core.jar" relativePath="true"/>
+        <library path="lib/jackson-databind.jar" relativePath="true"/>
+        <library path="lib/jboss-logging.jar" relativePath="true"/>
+        <library path="lib/jboss-threads.jar" relativePath="true"/>
+        <library path="lib/undertow-core.jar" relativePath="true"/>
+        <library path="lib/wildfly-client-config.jar" relativePath="true"/>
+        <library path="lib/wildfly-common.jar" relativePath="true"/>
+        <library path="lib/xnio-api.jar" relativePath="true"/>
+        <library path="lib/xnio-nio.jar" relativePath="true"/>
     </runtime>
 
     <actionSets>

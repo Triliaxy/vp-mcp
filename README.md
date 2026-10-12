@@ -1,5 +1,22 @@
 # Visual Paradigm MCP Plugin
 
+## Local deletion and compatibility fixes
+
+- `removeDiagramElement(diagramName, elementName)` removes a single diagram view through
+  `IDiagramElement.deleteViewOnly()`. Its underlying model remains available to other diagrams.
+- `deleteModelElement(diagramName, elementName)` deletes the underlying model and all its views
+  through `IModelElement.delete()`. Dependent relationships are also removed.
+- Both tools require an unambiguous, nonblank model name or shape caption and check the result
+  before reporting success. Failed deletion is returned as an MCP tool error (`isError: true`).
+- HTTP/SSE handlers use Undertow's managed worker dispatch rather than deprecated no-argument
+  dispatch and an unclosed executor per request.
+- Source compilation has been checked against the installed Visual Paradigm 17.3 and 18.1 APIs.
+  No deprecated Visual Paradigm API calls remain in the compiled source. This is an API
+  compatibility check, not an exhaustive behavioral test of every tool or product edition.
+
+Run the regression suite with `mvn test -DskipTests=false -Dvp.lib.dir=<VP-install>/lib`.
+The Vintage engine is included so the existing JUnit 4 tests run alongside the JUnit 5 tests.
+
 A Model Context Protocol (MCP) server plugin for Visual Paradigm that provides
 AI applications with seamless integration to Visual Paradigm's modeling and
 diagramming modeling capabilities. The MCP server is embedded directly within
